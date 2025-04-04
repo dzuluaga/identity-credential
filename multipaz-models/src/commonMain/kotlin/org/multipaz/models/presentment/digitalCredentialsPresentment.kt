@@ -287,6 +287,9 @@ private suspend fun digitalCredentialsOpenID4VPProtocol(
         val jws = Json.parseToJsonElement(signedRequest.jsonPrimitive.content)
         val info = JsonWebSignature.getInfo(jws)
         check(info.x5c != null) { "x5c missing in JWS" }
+        for (cert in info.x5c!!.certificates) {
+            println("cert: ${cert.toPem()}")
+        }
         JsonWebSignature.verify(jws, info.x5c!!.certificates.first().ecPublicKey)
         requesterCertChain = info.x5c
         info.claimsSet

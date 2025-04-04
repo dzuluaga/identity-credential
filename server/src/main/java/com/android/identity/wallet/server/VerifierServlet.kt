@@ -82,11 +82,19 @@ import kotlinx.serialization.json.putJsonObject
 import net.minidev.json.JSONArray
 import net.minidev.json.JSONObject
 import net.minidev.json.JSONStyle
+import org.multipaz.asn1.ASN1
+import org.multipaz.asn1.ASN1Encoding
+import org.multipaz.asn1.ASN1Sequence
+import org.multipaz.asn1.ASN1TagClass
+import org.multipaz.asn1.ASN1TaggedObject
+import org.multipaz.asn1.OID
 import org.multipaz.cbor.addCborArray
 import org.multipaz.cbor.addCborMap
 import org.multipaz.cbor.buildCborArray
 import org.multipaz.cbor.buildCborMap
 import org.multipaz.cbor.putCborMap
+import org.multipaz.crypto.X509Cert
+import org.multipaz.crypto.X509KeyUsage
 import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.URLEncoder
@@ -116,6 +124,7 @@ private data class OpenID4VPBeginRequest(
     val requestId: String,
     val protocol: String,
     val origin: String,
+    val host: String,
     val scheme: String
 )
 
@@ -152,7 +161,8 @@ data class Session(
     val requestId: String,          // DocumentWellKnownRequest.id
     val protocol: Protocol,
     val nonce: ByteString,
-    val origin: String,
+    val origin: String,             // e.g. https://ws.davidz25.net
+    val host: String,               // e.g. ws.davidz25.net
     val encryptionKey: EcPrivateKey,
     val signRequest: Boolean = true,
     val encryptResponse: Boolean = true,
@@ -193,6 +203,7 @@ private data class DCBeginRequest(
     val requestId: String,
     val protocol: String,
     val origin: String,
+    val host: String,
     val signRequest: Boolean,
     val encryptResponse: Boolean,
 )
@@ -265,7 +276,7 @@ class VerifierServlet : BaseHttpServlet() {
                 //
                 val readerRootKey = Crypto.createEcPrivateKey(EcCurve.P256)
                 val readerRootKeySignatureAlgorithm = Algorithm.ES256
-                val readerRootKeySubject = "CN=OWF IC Online Verifier Reader Root Key"
+                val readerRootKeySubject = "CN=OWF Multipaz Online Verifier Reader Root Key"
                 val readerRootKeyCertificate = MdocUtil.generateReaderRootCertificate(
                     readerRootKey = readerRootKey,
                     subject = X500Name.fromName(readerRootKeySubject),
@@ -389,12 +400,12 @@ class VerifierServlet : BaseHttpServlet() {
         "x509_san_dns:$ret"
     }
 
-    private fun createSingleUseReaderKey(): Pair<EcPrivateKey, X509CertChain> {
+    private fun createSingleUseReaderKey(dnsName: String): Pair<EcPrivateKey, X509CertChain> {
         val now = Clock.System.now()
         val validFrom = now.plus(DateTimePeriod(minutes = -10), TimeZone.currentSystemDefault())
         val validUntil = now.plus(DateTimePeriod(minutes = 10), TimeZone.currentSystemDefault())
         val readerKey = Crypto.createEcPrivateKey(EcCurve.P256)
-        val readerKeySubject = "CN=OWF IC Online Verifier Single-Use Reader Key"
+        val readerKeySubject = "CN=OWF Multipaz Online Verifier Single-Use Reader Key"
 
         // TODO: for now, instead of using the per-site Reader Root generated at first run, use the
         //  well-know OWF IC Reader root checked into Git.
@@ -423,21 +434,41 @@ class VerifierServlet : BaseHttpServlet() {
         val certsValidUntil = LocalDate.parse("2034-12-01").atStartOfDayIn(TimeZone.UTC)
         val owfIcReaderRootCert = MdocUtil.generateReaderRootCertificate(
             readerRootKey = owfIcReaderRootKey,
-            subject = X500Name.fromName("CN=OWF IC TestApp Reader Root"),
+            subject = X500Name.fromName("CN=OWF Multipaz TestApp Reader Root"),
             serial = ASN1Integer(1L),
             validFrom = certsValidFrom,
             validUntil = certsValidUntil,
         )
 
-        val readerKeyCertificate = MdocUtil.generateReaderCertificate(
-            readerRootCert = owfIcReaderRootCert,
-            readerRootKey = owfIcReaderRootKey,
-            readerKey = readerKey.publicKey,
+        val readerKeyCertificate = X509Cert.Builder(
+            publicKey = readerKey.publicKey,
+            signingKey = owfIcReaderRootKey,
+            signatureAlgorithm = owfIcReaderRootKey.curve.defaultSigningAlgorithm,
+            serialNumber = ASN1Integer(1L),
             subject = X500Name.fromName(readerKeySubject),
-            serial = ASN1Integer(1L),
+            issuer = owfIcReaderRootCert.subject,
             validFrom = validFrom,
             validUntil = validUntil
         )
+            .includeSubjectKeyIdentifier()
+            .setAuthorityKeyIdentifierToCertificate(owfIcReaderRootCert)
+            .setKeyUsage(setOf(X509KeyUsage.DIGITAL_SIGNATURE))
+            .addExtension(
+                OID.X509_EXTENSION_SUBJECT_ALT_NAME.oid,
+                false,
+                ASN1.encode(
+                    ASN1Sequence(listOf(
+                        ASN1TaggedObject(
+                            ASN1TagClass.CONTEXT_SPECIFIC,
+                            ASN1Encoding.PRIMITIVE,
+                            2, // dNSName
+                            dnsName.encodeToByteArray()
+                        )
+                    ))
+                )
+            )
+            .build()
+
         return Pair(
             readerKey,
             X509CertChain(listOf(readerKeyCertificate) + owfIcReaderRootCert)
@@ -569,6 +600,7 @@ class VerifierServlet : BaseHttpServlet() {
         val session = Session(
             nonce = ByteString(Random.Default.nextBytes(16)),
             origin = request.origin,
+            host = request.host,
             encryptionKey = Crypto.createEcPrivateKey(EcCurve.P256),
             requestFormat = request.format,
             requestDocType = request.docType,
@@ -585,7 +617,7 @@ class VerifierServlet : BaseHttpServlet() {
             )
         }
 
-        val (readerAuthKey, readerAuthKeyCertification) = createSingleUseReaderKey()
+        val (readerAuthKey, readerAuthKeyCertification) = createSingleUseReaderKey(session.host)
 
         // Uncomment when making test vectors...
         //Logger.iCbor(TAG, "readerKey: ", Cbor.encode(session.encryptionKey.toCoseKey().toDataItem()))
@@ -655,7 +687,7 @@ class VerifierServlet : BaseHttpServlet() {
                 }
                 "vc" -> {
                     val clientIdToUse = if (session.signRequest) {
-                        "x509_san_uri:${session.origin}/server/verifier.html"
+                        "x509_san_dns:${session.host}"
                     } else {
                         "web-origin:${session.origin}"
                     }
@@ -820,7 +852,7 @@ class VerifierServlet : BaseHttpServlet() {
         when (session.requestFormat) {
             "mdoc" -> {
                 val effectiveClientId = if (session.signRequest) {
-                    "x509_san_uri:${session.origin}/server/verifier.html"
+                    "x509_san_dns:${session.host}"
                 } else {
                     "web-origin:${session.origin}"
                 }
@@ -881,6 +913,7 @@ class VerifierServlet : BaseHttpServlet() {
         val session = Session(
             nonce = ByteString(Random.Default.nextBytes(16)),
             origin = request.origin,
+            host = request.host,
             encryptionKey = Crypto.createEcPrivateKey(EcCurve.P256),
             requestFormat = request.format,
             requestDocType = request.docType,
@@ -943,7 +976,7 @@ class VerifierServlet : BaseHttpServlet() {
 
         val responseUri = baseUrl + "/verifier/openid4vpResponse?sessionId=${sessionId}"
 
-        val (singleUseReaderKeyPriv, singleUseReaderKeyCertChain) = createSingleUseReaderKey()
+        val (singleUseReaderKeyPriv, singleUseReaderKeyCertChain) = createSingleUseReaderKey(session.host)
 
         val readerPublic = singleUseReaderKeyPriv.publicKey.javaPublicKey as ECPublicKey
         val readerPrivate = singleUseReaderKeyPriv.javaPrivateKey as ECPrivateKey
@@ -1497,7 +1530,10 @@ private fun calcDcRequestStringOpenID4VP(
         put("client_metadata", clientMetadata)
         // Only include client_id for signed requests
         if (signRequest) {
-            put("client_id", JsonPrimitive("x509_san_uri:${session.origin}/server/verifier.html"))
+            put("client_id", JsonPrimitive("x509_san_dns:${session.host}"))
+            putJsonArray("expected_origins") {
+                add(JsonPrimitive(session.origin))
+            }
         }
         put("nonce", JsonPrimitive(nonce.toByteArray().toBase64Url()))
 

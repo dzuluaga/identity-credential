@@ -484,6 +484,12 @@ class X509Cert(
             return this
         }
 
+        fun setAltName(
+
+        ): Builder {
+            return this
+        }
+
         fun build(): X509Cert {
             val signatureAlgorithmSeq = signatureAlgorithm.getSignatureAlgorithmSeq(signingKey.curve)
 
