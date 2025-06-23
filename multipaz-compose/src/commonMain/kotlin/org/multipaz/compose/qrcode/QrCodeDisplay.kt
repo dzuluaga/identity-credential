@@ -28,14 +28,16 @@ fun QrCodeDisplay(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        if (deviceEngagement.value != null) {
-            val mdocUrl = "mdoc:" + deviceEngagement.value!!.toByteArray().toBase64Url()
-            val qrCodeBitmap = remember { generateQrCode(mdocUrl) }
+        deviceEngagement.value?.let { engagement ->
+            val qrCodeBitmap = remember(engagement) {
+                val mdocUrl = "mdoc:" + engagement.toByteArray().toBase64Url()
+                generateQrCode(mdocUrl)
+            }
             Text(text = "Present QR code to mdoc reader")
             Image(
                 modifier = Modifier.fillMaxWidth(),
                 bitmap = qrCodeBitmap,
-                contentDescription = null,
+                contentDescription = "Device engagement QR code",
                 contentScale = ContentScale.FillWidth
             )
             Button(onClick = onCancel) {
