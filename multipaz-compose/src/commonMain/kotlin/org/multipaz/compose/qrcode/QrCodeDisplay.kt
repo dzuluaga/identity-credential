@@ -19,7 +19,30 @@ import kotlinx.io.bytestring.ByteString
 import org.multipaz.util.toBase64Url
 
 @Composable
-expect fun QrCodeDisplay(
+fun QrCodeDisplay(
     deviceEngagement: MutableState<ByteString?>,
     onCancel: () -> Unit
-)
+) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        deviceEngagement.value?.let { engagement ->
+            val qrCodeBitmap = remember(engagement) {
+                val mdocUrl = "mdoc:" + engagement.toByteArray().toBase64Url()
+                generateQrCode(mdocUrl)
+            }
+            Text(text = "Present QR code to mdoc reader")
+            Image(
+                modifier = Modifier.fillMaxWidth(),
+                bitmap = qrCodeBitmap,
+                contentDescription = "Device engagement QR code",
+                contentScale = ContentScale.FillWidth
+            )
+            Button(onClick = onCancel) {
+                Text("Cancel")
+            }
+        }
+    }
+}
