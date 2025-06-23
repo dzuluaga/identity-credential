@@ -16,6 +16,7 @@ import org.multipaz.mdoc.transport.waitForConnection
 import org.multipaz.models.presentment.MdocPresentmentMechanism
 import org.multipaz.models.presentment.PresentmentModel
 import org.multipaz.util.UUID
+import kotlin.coroutines.cancellation.CancellationException
 
 fun startQrPresentment(
     presentmentModel: PresentmentModel,
@@ -24,43 +25,51 @@ fun startQrPresentment(
     presentmentModel.reset()
     presentmentModel.setConnecting()
     presentmentModel.presentmentScope.launch {
-        val connectionMethods = listOf(
-            MdocConnectionMethodBle(
-                supportsPeripheralServerMode = false,
-                supportsCentralClientMode = true,
-                peripheralServerModeUuid = null,
-                centralClientModeUuid = UUID.randomUUID(),
+        try {
+            val connectionMethods = listOf(
+                MdocConnectionMethodBle(
+                    supportsPeripheralServerMode = false,
+                    supportsCentralClientMode = true,
+                    peripheralServerModeUuid = null,
+                    centralClientModeUuid = UUID.randomUUID(),
+                )
             )
-        )
-        val eDeviceKey = Crypto.createEcPrivateKey(EcCurve.P256)
-        val advertisedTransports = connectionMethods.advertise(
-            role = MdocRole.MDOC,
-            transportFactory = MdocTransportFactory.Default,
-            options = MdocTransportOptions(bleUseL2CAP = true),
-        )
-        val engagementGenerator = EngagementGenerator(
-            eSenderKey = eDeviceKey.publicKey,
-            version = "1.0"
-        )
-        engagementGenerator.addConnectionMethods(advertisedTransports.map {
-            it.connectionMethod
-        })
-        val encodedDeviceEngagement = ByteString(engagementGenerator.generate())
-        deviceEngagement.value = encodedDeviceEngagement
-        val transport = advertisedTransports.waitForConnection(
-            eSenderKey = eDeviceKey.publicKey,
-            coroutineScope = presentmentModel.presentmentScope
-        )
-        presentmentModel.setMechanism(
-            MdocPresentmentMechanism(
-                transport = transport,
-                eDeviceKey = eDeviceKey,
-                encodedDeviceEngagement = encodedDeviceEngagement,
-                handover = Simple.NULL,
-                engagementDuration = null,
-                allowMultipleRequests = false
+            val eDeviceKey = Crypto.createEcPrivateKey(EcCurve.P256)
+            val advertisedTransports = connectionMethods.advertise(
+                role = MdocRole.MDOC,
+                transportFactory = MdocTransportFactory.Default,
+                options = MdocTransportOptions(bleUseL2CAP = true),
             )
-        )
-        deviceEngagement.value = null
+            val engagementGenerator = EngagementGenerator(
+                eSenderKey = eDeviceKey.publicKey,
+                version = EngagementGenerator.ENGAGEMENT_VERSION_1_0
+            )
+            engagementGenerator.addConnectionMethods(advertisedTransports.map {
+                it.connectionMethod
+            })
+            val encodedDeviceEngagement = ByteString(engagementGenerator.generate())
+            deviceEngagement.value = encodedDeviceEngagement
+            val transport = advertisedTransports.waitForConnection(
+                eSenderKey = eDeviceKey.publicKey,
+                coroutineScope = presentmentModel.presentmentScope
+            )
+            presentmentModel.setMechanism(
+                MdocPresentmentMechanism(
+                    transport = transport,
+                    eDeviceKey = eDeviceKey,
+                    encodedDeviceEngagement = encodedDeviceEngagement,
+                    handover = Simple.NULL,
+                    engagementDuration = null,
+                    allowMultipleRequests = false
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            presentmentModel.setCompleted(e)
+        } finally {
+            // to ensure the QR code is hidden even on error or cancellation.
+            deviceEngagement.value = null
+        }
     }
 }
